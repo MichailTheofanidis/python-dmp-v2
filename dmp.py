@@ -7,7 +7,7 @@ class Dmp:
         self.a = 25.0                  # transformation gain
         self.b = 25.0 / 4.0
         self.as_ = 5.0                 # canonical decay
-        self.ng = 20                  # basis functions
+        self.ng = 200                  # basis functions
 
         self.iter = 100
 
@@ -34,32 +34,51 @@ class Dmp:
     # Basis Functions
     # ==========================================================
     def basis_functions(self, s):
+
         S = np.tile(s, (self.ng, 1))
         C = np.tile(self.c[:, None], (1, len(s)))
 
         psi = np.exp(-self.h[:, None] * (S - C) ** 2)
+
         return psi
 
     # ==========================================================
     # Imitation Learning
     # ==========================================================
-    def imitate(self, x, dx, ddx, t, s, psi):
+    def imitate(self, x, t, s, psi):
 
-        tau = t[-1]
+        tau = t[-1] - t[0]
+
         g = x[-1, :]
         x0 = x[0, :]
 
+        # Compute velocity
+        dx = np.gradient(x, t, axis=0)
+
+        # Compute acceleration
+        ddx = np.gradient(dx, t, axis=0)
+
         sigma = s
 
-        ftarget = (tau**2 * ddx - self.a * (self.b * (g - x) - tau * dx))
+        # Target forcing term
+        ftarget = (
+                tau ** 2 * ddx
+                - self.a * (
+                        self.b * (g - x)
+                        - tau * dx
+                )
+        )
 
         w = np.zeros((self.ng, x.shape[1]))
 
         for k in range(self.ng):
+            numerator = (
+                    (psi[k, :] * sigma)[:, None] * ftarget
+            ).sum(axis=0)
 
-            numerator = ((psi[k, :] * sigma)[:, None] * ftarget).sum(axis=0)
-
-            denominator = np.sum(psi[k, :] * sigma**2)
+            denominator = np.sum(
+                psi[k, :] * sigma ** 2
+            )
 
             w[k, :] = numerator / denominator
 
