@@ -1,32 +1,28 @@
 import numpy as np
+from scipy.signal import savgol_filter
 from scipy.linalg import block_diag
 from scipy.optimize import minimize
 
 class Dmp:
     def __init__(self, obs_param=None):
-        self.a = 25.0                  # transformation gain
-        self.b = 25.0 / 4.0
+        self.a = 26.0                  # transformation gain
+        self.b = self.a / 4.0
         self.as_ = 5.0                 # canonical decay
-        self.ng = 200                  # basis functions
+        self.ng = 40                  # basis functions
 
         self.iter = 100
 
-        # canonical centers
-        self.c = np.exp(-self.as_ * np.linspace(0, 1, self.ng))
-        self.h = np.ones(self.ng) * (self.ng ** 1.5) / self.c
+    def psi(self, height, center, state):
+        return np.exp((-height) * (np.power(state - center, 2)))
 
     # ==========================================================
     # Canonical System
     # ==========================================================
     def phase(self, t):
-        tau = t[-1]
-        dt = np.concatenate(([0], np.diff(t)))
 
-        s = np.zeros(len(t))
-        s[0] = 1.0
+        tau = t[-1] - t[0]
 
-        for i in range(1, len(t)):
-            s[i] = s[i - 1] - self.as_ * s[i - 1] * dt[i] / tau
+        s = np.exp(-self.as_ * (t - t[0]) / tau)
 
         return s
 
@@ -35,10 +31,15 @@ class Dmp:
     # ==========================================================
     def basis_functions(self, s):
 
-        S = np.tile(s, (self.ng, 1))
-        C = np.tile(self.c[:, None], (1, len(s)))
+        # Find the centers of the Gaussian in the s domain
+        h = 0.5
+        c = np.linspace(max(s), min(s), self.ng+2)
+        c = c[1:-1]
+        d = c[1] - c[0]
+        c /= d
 
-        psi = np.exp(-self.h[:, None] * (S - C) ** 2)
+        # Calculate every gaussian
+        psi = np.array([[self.psi(h, _c, _s / d) for _s in s] for _c in c])
 
         return psi
 
@@ -52,8 +53,19 @@ class Dmp:
         g = x[-1, :]
         x0 = x[0, :]
 
+        # Window length must be odd
+        window_length = 51
+        poly_order = 3
+
+        x_smooth = savgol_filter(
+            x,
+            window_length=window_length,
+            polyorder=poly_order,
+            axis=0
+        )
+
         # Compute velocity
-        dx = np.gradient(x, t, axis=0)
+        dx = np.gradient(x_smooth, t, axis=0)
 
         # Compute acceleration
         ddx = np.gradient(dx, t, axis=0)
@@ -61,26 +73,20 @@ class Dmp:
         sigma = s
 
         # Target forcing term
-        ftarget = (
-                tau ** 2 * ddx
-                - self.a * (
-                        self.b * (g - x)
-                        - tau * dx
-                )
-        )
+        # ftarget = (tau ** 2 * ddx - self.a * ( self.b * (g - x_smooth) - tau * dx))/(g-x0)
+        ftarget = (tau ** 2 * ddx - self.a * (self.b * (g - x_smooth) - tau * dx))
 
         w = np.zeros((self.ng, x.shape[1]))
 
         for k in range(self.ng):
-            numerator = (
-                    (psi[k, :] * sigma)[:, None] * ftarget
-            ).sum(axis=0)
+            numerator = ((psi[k, :] * sigma)[:, None] * ftarget).sum(axis=0)
 
-            denominator = np.sum(
-                psi[k, :] * sigma ** 2
-            )
+            denominator = np.sum(psi[k, :] * sigma ** 2)
 
-            w[k, :] = numerator / denominator
+            if denominator < 1e-10:
+                w[k, :] = 0.0
+            else:
+                w[k, :] = numerator / denominator
 
         return w, ftarget
 
@@ -89,7 +95,7 @@ class Dmp:
     # ==========================================================
     def generate(self, w, x0, g, t, s, psi):
 
-        tau = t[-1]
+        tau = t[-1] - t[0]
         dt = np.concatenate(([0], np.diff(t)))
 
         n = len(t)
@@ -105,7 +111,9 @@ class Dmp:
 
             f = (psi[:, i] @ w) / np.sum(psi[:, i]) * s[i]
 
-            ddx[i, :] = (self.a* (self.b * (g - x[i - 1, :])- tau * dx[i - 1, :])+ f) / tau**2
+            #ddx[i, :] = (self.a* (self.b * (g - x[i - 1, :])- tau * dx[i - 1, :])+ (g-x0)*f) / tau**2
+            ddx[i, :] = (self.a * (self.b * (g - x[i - 1, :]) - tau * dx[i - 1, :]) + f) / tau ** 2
+            #ddx[i, :] = (self.a * (self.b * (g - x[i - 1, :]) -  dx[i - 1, :]) + f)
 
             dx[i, :] = dx[i - 1, :] + ddx[i, :] * dt[i]
             x[i, :] = x[i - 1, :] + dx[i, :] * dt[i]
